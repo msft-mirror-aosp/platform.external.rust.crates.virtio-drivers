@@ -3,6 +3,25 @@
 
 
 
+package {
+    default_applicable_licenses: [
+        "external_rust_crates_virtio-drivers_license",
+    ],
+}
+
+// Added automatically by a large-scale-change
+// See: http://go/android-license-faq
+license {
+    name: "external_rust_crates_virtio-drivers_license",
+    visibility: [":__subpackages__"],
+    license_kinds: [
+        "SPDX-license-identifier-MIT",
+    ],
+    license_text: [
+        "LICENSE",
+    ],
+}
+
 rust_library {
     name: "libvirtio_drivers",
     host_supported: true,
