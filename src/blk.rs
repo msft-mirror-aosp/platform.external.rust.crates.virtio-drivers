@@ -3,8 +3,9 @@ use crate::queue::VirtQueue;
 use crate::transport::Transport;
 use crate::volatile::{volread, Volatile};
 use bitflags::*;
-use core::hint::spin_loop;
 use log::*;
+
+const QUEUE: u16 = 0;
 
 /// The virtio block device is a simple virtual block device (ie. disk).
 ///
@@ -28,13 +29,15 @@ impl<H: Hal, T: Transport> VirtIOBlk<H, T> {
         });
 
         // read configuration space
-        let config = transport.config_space().cast::<BlkConfig>();
+        let config = transport.config_space::<BlkConfig>()?;
         info!("config: {:?}", config);
         // Safe because config is a valid pointer to the device configuration space.
-        let capacity = unsafe { volread!(config, capacity) };
+        let capacity = unsafe {
+            volread!(config, capacity_low) as u64 | (volread!(config, capacity_high) as u64) << 32
+        };
         info!("found a block device of size {}KB", capacity / 2);
 
-        let queue = VirtQueue::new(&mut transport, 0, 16)?;
+        let queue = VirtQueue::new(&mut transport, QUEUE, 16)?;
         transport.finish_init();
 
         Ok(VirtIOBlk {
@@ -58,12 +61,11 @@ impl<H: Hal, T: Transport> VirtIOBlk<H, T> {
             sector: block_id as u64,
         };
         let mut resp = BlkResp::default();
-        self.queue.add(&[req.as_buf()], &[buf, resp.as_buf_mut()])?;
-        self.transport.notify(0);
-        while !self.queue.can_pop() {
-            spin_loop();
-        }
-        self.queue.pop_used()?;
+        self.queue.add_notify_wait_pop(
+            &[req.as_buf()],
+            &[buf, resp.as_buf_mut()],
+            &mut self.transport,
+        )?;
         match resp.status {
             RespStatus::Ok => Ok(()),
             _ => Err(Error::IoError),
@@ -111,7 +113,7 @@ impl<H: Hal, T: Transport> VirtIOBlk<H, T> {
             sector: block_id as u64,
         };
         let token = self.queue.add(&[req.as_buf()], &[buf, resp.as_buf_mut()])?;
-        self.transport.notify(0);
+        self.transport.notify(QUEUE);
         Ok(token)
     }
 
@@ -124,12 +126,11 @@ impl<H: Hal, T: Transport> VirtIOBlk<H, T> {
             sector: block_id as u64,
         };
         let mut resp = BlkResp::default();
-        self.queue.add(&[req.as_buf(), buf], &[resp.as_buf_mut()])?;
-        self.transport.notify(0);
-        while !self.queue.can_pop() {
-            spin_loop();
-        }
-        self.queue.pop_used()?;
+        self.queue.add_notify_wait_pop(
+            &[req.as_buf(), buf],
+            &[resp.as_buf_mut()],
+            &mut self.transport,
+        )?;
         match resp.status {
             RespStatus::Ok => Ok(()),
             _ => Err(Error::IoError),
@@ -166,7 +167,7 @@ impl<H: Hal, T: Transport> VirtIOBlk<H, T> {
             sector: block_id as u64,
         };
         let token = self.queue.add(&[req.as_buf(), buf], &[resp.as_buf_mut()])?;
-        self.transport.notify(0);
+        self.transport.notify(QUEUE);
         Ok(token)
     }
 
@@ -184,11 +185,19 @@ impl<H: Hal, T: Transport> VirtIOBlk<H, T> {
     }
 }
 
+impl<H: Hal, T: Transport> Drop for VirtIOBlk<H, T> {
+    fn drop(&mut self) {
+        // Clear any pointers pointing to DMA regions, so the device doesn't try to access them
+        // after they have been freed.
+        self.transport.queue_unset(QUEUE);
+    }
+}
+
 #[repr(C)]
-#[derive(Debug)]
 struct BlkConfig {
     /// Number of 512 Bytes sectors
-    capacity: Volatile<u64>,
+    capacity_low: Volatile<u32>,
+    capacity_high: Volatile<u32>,
     size_max: Volatile<u32>,
     seg_max: Volatile<u32>,
     cylinders: Volatile<u16>,
