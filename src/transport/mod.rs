@@ -1,8 +1,9 @@
 #[cfg(test)]
 pub mod fake;
 pub mod mmio;
+pub mod pci;
 
-use crate::{PhysAddr, PAGE_SIZE};
+use crate::{PhysAddr, Result, PAGE_SIZE};
 use bitflags::bitflags;
 use core::ptr::NonNull;
 
@@ -21,7 +22,7 @@ pub trait Transport {
     fn max_queue_size(&self) -> u32;
 
     /// Notifies the given queue on the device.
-    fn notify(&mut self, queue: u32);
+    fn notify(&mut self, queue: u16);
 
     /// Sets the device status.
     fn set_status(&mut self, status: DeviceStatus);
@@ -32,15 +33,18 @@ pub trait Transport {
     /// Sets up the given queue.
     fn queue_set(
         &mut self,
-        queue: u32,
+        queue: u16,
         size: u32,
         descriptors: PhysAddr,
         driver_area: PhysAddr,
         device_area: PhysAddr,
     );
 
+    /// Disables and resets the given queue.
+    fn queue_unset(&mut self, queue: u16);
+
     /// Returns whether the queue is in use, i.e. has a nonzero PFN or is marked as ready.
-    fn queue_used(&mut self, queue: u32) -> bool;
+    fn queue_used(&mut self, queue: u16) -> bool;
 
     /// Acknowledges an interrupt.
     ///
@@ -51,23 +55,29 @@ pub trait Transport {
     ///
     /// Ref: virtio 3.1.1 Device Initialization
     fn begin_init(&mut self, negotiate_features: impl FnOnce(u64) -> u64) {
-        self.set_status(DeviceStatus::ACKNOWLEDGE);
-        self.set_status(DeviceStatus::DRIVER);
+        self.set_status(DeviceStatus::ACKNOWLEDGE | DeviceStatus::DRIVER);
 
         let features = self.read_device_features();
         self.write_driver_features(negotiate_features(features));
-        self.set_status(DeviceStatus::FEATURES_OK);
+        self.set_status(
+            DeviceStatus::ACKNOWLEDGE | DeviceStatus::DRIVER | DeviceStatus::FEATURES_OK,
+        );
 
         self.set_guest_page_size(PAGE_SIZE as u32);
     }
 
     /// Finishes initializing the device.
     fn finish_init(&mut self) {
-        self.set_status(DeviceStatus::DRIVER_OK);
+        self.set_status(
+            DeviceStatus::ACKNOWLEDGE
+                | DeviceStatus::DRIVER
+                | DeviceStatus::FEATURES_OK
+                | DeviceStatus::DRIVER_OK,
+        );
     }
 
     /// Gets the pointer to the config space.
-    fn config_space(&self) -> NonNull<u64>;
+    fn config_space<T: 'static>(&self) -> Result<NonNull<T>>;
 }
 
 bitflags! {
@@ -128,4 +138,46 @@ pub enum DeviceType {
     Pstore = 22,
     IOMMU = 23,
     Memory = 24,
+}
+
+impl From<u32> for DeviceType {
+    fn from(virtio_device_id: u32) -> Self {
+        match virtio_device_id {
+            1 => DeviceType::Network,
+            2 => DeviceType::Block,
+            3 => DeviceType::Console,
+            4 => DeviceType::EntropySource,
+            5 => DeviceType::MemoryBalloon,
+            6 => DeviceType::IoMemory,
+            7 => DeviceType::Rpmsg,
+            8 => DeviceType::ScsiHost,
+            9 => DeviceType::_9P,
+            10 => DeviceType::Mac80211,
+            11 => DeviceType::RprocSerial,
+            12 => DeviceType::VirtioCAIF,
+            13 => DeviceType::MemoryBalloon,
+            16 => DeviceType::GPU,
+            17 => DeviceType::Timer,
+            18 => DeviceType::Input,
+            19 => DeviceType::Socket,
+            20 => DeviceType::Crypto,
+            21 => DeviceType::SignalDistributionModule,
+            22 => DeviceType::Pstore,
+            23 => DeviceType::IOMMU,
+            24 => DeviceType::Memory,
+            _ => DeviceType::Invalid,
+        }
+    }
+}
+
+impl From<u16> for DeviceType {
+    fn from(virtio_device_id: u16) -> Self {
+        u32::from(virtio_device_id).into()
+    }
+}
+
+impl From<u8> for DeviceType {
+    fn from(virtio_device_id: u8) -> Self {
+        u32::from(virtio_device_id).into()
+    }
 }
