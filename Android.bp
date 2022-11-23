@@ -29,9 +29,10 @@ rust_library {
     cargo_pkg_version: "0.1.0",
     srcs: ["src/lib.rs"],
     edition: "2018",
+    no_stdlibs: true,
     rustlibs: [
         "libbitflags",
-        "liblog_rust",
+        "liblog_rust_nostd",
     ],
     apex_available: [
         "//apex_available:platform",
