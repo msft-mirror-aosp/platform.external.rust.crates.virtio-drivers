@@ -5,12 +5,14 @@
 #![allow(clippy::identity_op)]
 #![allow(dead_code)]
 
+#[cfg(any(feature = "alloc", test))]
 extern crate alloc;
 
 mod blk;
 mod console;
 mod gpu;
 mod hal;
+#[cfg(feature = "alloc")]
 mod input;
 mod net;
 mod queue;
@@ -21,10 +23,12 @@ pub use self::blk::{BlkResp, RespStatus, VirtIOBlk};
 pub use self::console::VirtIOConsole;
 pub use self::gpu::VirtIOGpu;
 pub use self::hal::{Hal, PhysAddr, VirtAddr};
+#[cfg(feature = "alloc")]
 pub use self::input::{InputConfigSelect, InputEvent, VirtIOInput};
 pub use self::net::VirtIONet;
 use self::queue::VirtQueue;
 pub use self::transport::mmio::{MmioError, MmioTransport, MmioVersion, VirtIOHeader};
+pub use self::transport::pci;
 pub use self::transport::{DeviceStatus, DeviceType, Transport};
 use core::mem::size_of;
 use hal::*;
@@ -50,6 +54,10 @@ pub enum Error {
     DmaError,
     /// I/O Error
     IoError,
+    /// The config space advertised by the device is smaller than the driver expected.
+    ConfigSpaceTooSmall,
+    /// The device doesn't have any config space, but the driver expects some.
+    ConfigSpaceMissing,
 }
 
 /// Align `size` up to a page.

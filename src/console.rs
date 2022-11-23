@@ -1,13 +1,12 @@
 use super::*;
 use crate::queue::VirtQueue;
 use crate::transport::Transport;
-use crate::volatile::{ReadOnly, WriteOnly};
+use crate::volatile::{volread, ReadOnly, WriteOnly};
 use bitflags::*;
-use core::{fmt, hint::spin_loop};
 use log::*;
 
-const QUEUE_RECEIVEQ_PORT_0: usize = 0;
-const QUEUE_TRANSMITQ_PORT_0: usize = 1;
+const QUEUE_RECEIVEQ_PORT_0: u16 = 0;
+const QUEUE_TRANSMITQ_PORT_0: u16 = 1;
 const QUEUE_SIZE: u16 = 2;
 
 /// Virtio console. Only one single port is allowed since ``alloc'' is disabled.
@@ -31,9 +30,16 @@ impl<H: Hal, T: Transport> VirtIOConsole<'_, H, T> {
             let supported_features = Features::empty();
             (features & supported_features).bits()
         });
-        let config_space = transport.config_space().cast::<Config>();
-        let config = unsafe { config_space.as_ref() };
-        info!("Config: {:?}", config);
+        let config_space = transport.config_space::<Config>()?;
+        unsafe {
+            let columns = volread!(config_space, cols);
+            let rows = volread!(config_space, rows);
+            let max_ports = volread!(config_space, max_nr_ports);
+            info!(
+                "Columns: {} Rows: {} Max ports: {}",
+                columns, rows, max_ports,
+            );
+        }
         let receiveq = VirtQueue::new(&mut transport, QUEUE_RECEIVEQ_PORT_0, QUEUE_SIZE)?;
         let transmitq = VirtQueue::new(&mut transport, QUEUE_TRANSMITQ_PORT_0, QUEUE_SIZE)?;
         let queue_buf_dma = DMA::new(1)?;
@@ -53,7 +59,8 @@ impl<H: Hal, T: Transport> VirtIOConsole<'_, H, T> {
     }
 
     fn poll_retrieve(&mut self) -> Result<()> {
-        self.receiveq.add(&[], &[self.queue_buf_rx])?;
+        // Safe because the buffer lasts at least as long as the queue.
+        unsafe { self.receiveq.add(&[], &[self.queue_buf_rx])? };
         Ok(())
     }
 
@@ -92,13 +99,19 @@ impl<H: Hal, T: Transport> VirtIOConsole<'_, H, T> {
     /// Put a char onto the device.
     pub fn send(&mut self, chr: u8) -> Result<()> {
         let buf: [u8; 1] = [chr];
-        self.transmitq.add(&[&buf], &[])?;
-        self.transport.notify(QUEUE_TRANSMITQ_PORT_0 as u32);
-        while !self.transmitq.can_pop() {
-            spin_loop();
-        }
-        self.transmitq.pop_used()?;
+        // Safe because the buffer is valid until we pop_used below.
+        self.transmitq
+            .add_notify_wait_pop(&[&buf], &[], &mut self.transport)?;
         Ok(())
+    }
+}
+
+impl<H: Hal, T: Transport> Drop for VirtIOConsole<'_, H, T> {
+    fn drop(&mut self) {
+        // Clear any pointers pointing to DMA regions, so the device doesn't try to access them
+        // after they have been freed.
+        self.transport.queue_unset(QUEUE_RECEIVEQ_PORT_0);
+        self.transport.queue_unset(QUEUE_TRANSMITQ_PORT_0);
     }
 }
 
@@ -108,16 +121,6 @@ struct Config {
     rows: ReadOnly<u16>,
     max_nr_ports: ReadOnly<u32>,
     emerg_wr: WriteOnly<u32>,
-}
-
-impl fmt::Debug for Config {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Config")
-            .field("cols", &self.cols)
-            .field("rows", &self.rows)
-            .field("max_nr_ports", &self.max_nr_ports)
-            .finish()
-    }
 }
 
 bitflags! {
@@ -174,10 +177,10 @@ mod tests {
             device_type: DeviceType::Console,
             max_queue_size: 2,
             device_features: 0,
-            config_space: NonNull::from(&mut config_space).cast(),
+            config_space: NonNull::from(&mut config_space),
             state: state.clone(),
         };
-        let mut console = VirtIOConsole::<FakeHal, FakeTransport>::new(transport).unwrap();
+        let mut console = VirtIOConsole::<FakeHal, FakeTransport<Config>>::new(transport).unwrap();
 
         // Nothing is available to receive.
         assert_eq!(console.recv(false).unwrap(), None);
