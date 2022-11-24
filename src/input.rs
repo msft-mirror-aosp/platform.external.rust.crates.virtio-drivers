@@ -3,6 +3,7 @@ use crate::transport::Transport;
 use crate::volatile::{volread, volwrite, ReadOnly, WriteOnly};
 use alloc::boxed::Box;
 use bitflags::*;
+use core::ptr::NonNull;
 use log::*;
 
 /// Virtual human interface devices such as keyboards, mice and tablets.
@@ -15,6 +16,7 @@ pub struct VirtIOInput<H: Hal, T: Transport> {
     event_queue: VirtQueue<H>,
     status_queue: VirtQueue<H>,
     event_buf: Box<[InputEvent; 32]>,
+    config: NonNull<Config>,
 }
 
 impl<H: Hal, T: Transport> VirtIOInput<H, T> {
@@ -29,10 +31,13 @@ impl<H: Hal, T: Transport> VirtIOInput<H, T> {
             (features & supported_features).bits()
         });
 
+        let config = transport.config_space::<Config>()?;
+
         let mut event_queue = VirtQueue::new(&mut transport, QUEUE_EVENT, QUEUE_SIZE as u16)?;
         let status_queue = VirtQueue::new(&mut transport, QUEUE_STATUS, QUEUE_SIZE as u16)?;
         for (i, event) in event_buf.as_mut().iter_mut().enumerate() {
-            let token = event_queue.add(&[], &[event.as_buf_mut()])?;
+            // Safe because the buffer lasts as long as the queue.
+            let token = unsafe { event_queue.add(&[], &[event.as_buf_mut()])? };
             assert_eq!(token, i as u16);
         }
 
@@ -43,6 +48,7 @@ impl<H: Hal, T: Transport> VirtIOInput<H, T> {
             event_queue,
             status_queue,
             event_buf,
+            config,
         })
     }
 
@@ -56,7 +62,8 @@ impl<H: Hal, T: Transport> VirtIOInput<H, T> {
         if let Ok((token, _)) = self.event_queue.pop_used() {
             let event = &mut self.event_buf[token as usize];
             // requeue
-            if let Ok(new_token) = self.event_queue.add(&[], &[event.as_buf_mut()]) {
+            // Safe because buffer lasts as long as the queue.
+            if let Ok(new_token) = unsafe { self.event_queue.add(&[], &[event.as_buf_mut()]) } {
                 // This only works because nothing happen between `pop_used` and `add` that affects
                 // the list of free descriptors in the queue, so `add` reuses the descriptor which
                 // was just freed by `pop_used`.
@@ -75,18 +82,26 @@ impl<H: Hal, T: Transport> VirtIOInput<H, T> {
         subsel: u8,
         out: &mut [u8],
     ) -> u8 {
-        let config = self.transport.config_space().cast::<Config>();
         let size;
         let data;
         // Safe because config points to a valid MMIO region for the config space.
         unsafe {
-            volwrite!(config, select, select as u8);
-            volwrite!(config, subsel, subsel);
-            size = volread!(config, size);
-            data = volread!(config, data);
+            volwrite!(self.config, select, select as u8);
+            volwrite!(self.config, subsel, subsel);
+            size = volread!(self.config, size);
+            data = volread!(self.config, data);
         }
         out[..size as usize].copy_from_slice(&data[..size as usize]);
         size
+    }
+}
+
+impl<H: Hal, T: Transport> Drop for VirtIOInput<H, T> {
+    fn drop(&mut self) {
+        // Clear any pointers pointing to DMA regions, so the device doesn't try to access them
+        // after they have been freed.
+        self.transport.queue_unset(QUEUE_EVENT);
+        self.transport.queue_unset(QUEUE_STATUS);
     }
 }
 
@@ -178,8 +193,8 @@ bitflags! {
     }
 }
 
-const QUEUE_EVENT: usize = 0;
-const QUEUE_STATUS: usize = 1;
+const QUEUE_EVENT: u16 = 0;
+const QUEUE_STATUS: u16 = 1;
 
 // a parameter that can change
 const QUEUE_SIZE: usize = 32;
