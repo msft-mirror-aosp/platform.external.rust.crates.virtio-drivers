@@ -1,6 +1,7 @@
 {
   "dependencies": true,
   "device": true,
+  "features": "",
   "run": true,
   "tests": true
 }

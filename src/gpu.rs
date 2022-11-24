@@ -1,7 +1,7 @@
 use super::*;
 use crate::queue::VirtQueue;
 use crate::transport::Transport;
-use crate::volatile::{ReadOnly, Volatile, WriteOnly};
+use crate::volatile::{volread, ReadOnly, Volatile, WriteOnly};
 use bitflags::*;
 use core::{fmt, hint::spin_loop};
 use log::*;
@@ -43,9 +43,15 @@ impl<H: Hal, T: Transport> VirtIOGpu<'_, H, T> {
         });
 
         // read configuration space
-        let config_space = transport.config_space().cast::<Config>();
-        let config = unsafe { config_space.as_ref() };
-        info!("Config: {:?}", config);
+        let config_space = transport.config_space::<Config>()?;
+        unsafe {
+            let events_read = volread!(config_space, events_read);
+            let num_scanouts = volread!(config_space, num_scanouts);
+            info!(
+                "events_read: {:#x}, num_scanouts: {:#x}",
+                events_read, num_scanouts
+            );
+        }
 
         let control_queue = VirtQueue::new(&mut transport, QUEUE_TRANSMIT, 2)?;
         let cursor_queue = VirtQueue::new(&mut transport, QUEUE_CURSOR, 2)?;
@@ -163,13 +169,16 @@ impl<H: Hal, T: Transport> VirtIOGpu<'_, H, T> {
         unsafe {
             (self.queue_buf_send.as_mut_ptr() as *mut Req).write(req);
         }
-        self.control_queue
-            .add(&[self.queue_buf_send], &[self.queue_buf_recv])?;
-        self.transport.notify(QUEUE_TRANSMIT as u32);
+        let token = unsafe {
+            self.control_queue
+                .add(&[self.queue_buf_send], &[self.queue_buf_recv])?
+        };
+        self.transport.notify(QUEUE_TRANSMIT);
         while !self.control_queue.can_pop() {
             spin_loop();
         }
-        self.control_queue.pop_used()?;
+        let (popped_token, _) = self.control_queue.pop_used()?;
+        assert_eq!(popped_token, token);
         Ok(unsafe { (self.queue_buf_recv.as_ptr() as *const Rsp).read() })
     }
 
@@ -178,12 +187,13 @@ impl<H: Hal, T: Transport> VirtIOGpu<'_, H, T> {
         unsafe {
             (self.queue_buf_send.as_mut_ptr() as *mut Req).write(req);
         }
-        self.cursor_queue.add(&[self.queue_buf_send], &[])?;
-        self.transport.notify(QUEUE_CURSOR as u32);
+        let token = unsafe { self.cursor_queue.add(&[self.queue_buf_send], &[])? };
+        self.transport.notify(QUEUE_CURSOR);
         while !self.cursor_queue.can_pop() {
             spin_loop();
         }
-        self.cursor_queue.pop_used()?;
+        let (popped_token, _) = self.cursor_queue.pop_used()?;
+        assert_eq!(popped_token, token);
         Ok(())
     }
 
@@ -274,6 +284,15 @@ impl<H: Hal, T: Transport> VirtIOGpu<'_, H, T> {
             hot_y,
             _padding: 0,
         })
+    }
+}
+
+impl<H: Hal, T: Transport> Drop for VirtIOGpu<'_, H, T> {
+    fn drop(&mut self) {
+        // Clear any pointers pointing to DMA regions, so the device doesn't try to access them
+        // after they have been freed.
+        self.transport.queue_unset(QUEUE_TRANSMIT);
+        self.transport.queue_unset(QUEUE_CURSOR);
     }
 }
 
@@ -483,8 +502,8 @@ struct UpdateCursor {
     _padding: u32,
 }
 
-const QUEUE_TRANSMIT: usize = 0;
-const QUEUE_CURSOR: usize = 1;
+const QUEUE_TRANSMIT: u16 = 0;
+const QUEUE_CURSOR: u16 = 1;
 
 const SCANOUT_ID: u32 = 0;
 const RESOURCE_ID_FB: u32 = 0xbabe;

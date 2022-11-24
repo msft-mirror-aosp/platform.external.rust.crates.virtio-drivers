@@ -2,9 +2,8 @@ use core::mem::{size_of, MaybeUninit};
 
 use super::*;
 use crate::transport::Transport;
-use crate::volatile::{volread, ReadOnly, Volatile};
+use crate::volatile::{volread, ReadOnly};
 use bitflags::*;
-use core::hint::spin_loop;
 use log::*;
 
 /// The virtio network device is a virtual ethernet card.
@@ -31,7 +30,7 @@ impl<H: Hal, T: Transport> VirtIONet<H, T> {
             (features & supported_features).bits()
         });
         // read configuration space
-        let config = transport.config_space().cast::<Config>();
+        let config = transport.config_space::<Config>()?;
         let mac;
         // Safe because config points to a valid MMIO region for the config space.
         unsafe {
@@ -77,13 +76,9 @@ impl<H: Hal, T: Transport> VirtIONet<H, T> {
     pub fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
         let mut header = MaybeUninit::<Header>::uninit();
         let header_buf = unsafe { (*header.as_mut_ptr()).as_buf_mut() };
-        self.recv_queue.add(&[], &[header_buf, buf])?;
-        self.transport.notify(QUEUE_RECEIVE as u32);
-        while !self.recv_queue.can_pop() {
-            spin_loop();
-        }
-
-        let (_, len) = self.recv_queue.pop_used()?;
+        let len =
+            self.recv_queue
+                .add_notify_wait_pop(&[], &[header_buf, buf], &mut self.transport)?;
         // let header = unsafe { header.assume_init() };
         Ok(len as usize - size_of::<Header>())
     }
@@ -91,13 +86,18 @@ impl<H: Hal, T: Transport> VirtIONet<H, T> {
     /// Send a packet.
     pub fn send(&mut self, buf: &[u8]) -> Result {
         let header = unsafe { MaybeUninit::<Header>::zeroed().assume_init() };
-        self.send_queue.add(&[header.as_buf(), buf], &[])?;
-        self.transport.notify(QUEUE_TRANSMIT as u32);
-        while !self.send_queue.can_pop() {
-            spin_loop();
-        }
-        self.send_queue.pop_used()?;
+        self.send_queue
+            .add_notify_wait_pop(&[header.as_buf(), buf], &[], &mut self.transport)?;
         Ok(())
+    }
+}
+
+impl<H: Hal, T: Transport> Drop for VirtIONet<H, T> {
+    fn drop(&mut self) {
+        // Clear any pointers pointing to DMA regions, so the device doesn't try to access them
+        // after they have been freed.
+        self.transport.queue_unset(QUEUE_RECEIVE);
+        self.transport.queue_unset(QUEUE_TRANSMIT);
     }
 }
 
@@ -177,7 +177,6 @@ bitflags! {
 }
 
 #[repr(C)]
-#[derive(Debug)]
 struct Config {
     mac: ReadOnly<EthernetAddress>,
     status: ReadOnly<Status>,
@@ -189,12 +188,12 @@ type EthernetAddress = [u8; 6];
 #[repr(C)]
 #[derive(Debug)]
 struct Header {
-    flags: Volatile<Flags>,
-    gso_type: Volatile<GsoType>,
-    hdr_len: Volatile<u16>, // cannot rely on this
-    gso_size: Volatile<u16>,
-    csum_start: Volatile<u16>,
-    csum_offset: Volatile<u16>,
+    flags: Flags,
+    gso_type: GsoType,
+    hdr_len: u16, // cannot rely on this
+    gso_size: u16,
+    csum_start: u16,
+    csum_offset: u16,
     // payload starts from here
 }
 
@@ -218,5 +217,5 @@ enum GsoType {
     ECN = 0x80,
 }
 
-const QUEUE_RECEIVE: usize = 0;
-const QUEUE_TRANSMIT: usize = 1;
+const QUEUE_RECEIVE: u16 = 0;
+const QUEUE_TRANSMIT: u16 = 1;
