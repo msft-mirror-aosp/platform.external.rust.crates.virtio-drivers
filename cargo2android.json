@@ -2,6 +2,7 @@
   "dependencies": true,
   "device": true,
   "features": "",
+  "patch": "patches/Android.bp.patch",
   "run": true,
   "tests": true
 }
