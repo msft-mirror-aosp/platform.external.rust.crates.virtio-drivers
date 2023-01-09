@@ -1,10 +1,12 @@
-use super::*;
+//! Driver for VirtIO GPU devices.
+
+use crate::hal::{Dma, Hal};
 use crate::queue::VirtQueue;
 use crate::transport::Transport;
 use crate::volatile::{volread, ReadOnly, Volatile, WriteOnly};
-use bitflags::*;
-use core::{fmt, hint::spin_loop};
-use log::*;
+use crate::{pages, Error, Result, PAGE_SIZE};
+use bitflags::bitflags;
+use log::info;
 
 /// A virtio based graphics adapter.
 ///
@@ -17,15 +19,15 @@ pub struct VirtIOGpu<'a, H: Hal, T: Transport> {
     transport: T,
     rect: Option<Rect>,
     /// DMA area of frame buffer.
-    frame_buffer_dma: Option<DMA<H>>,
+    frame_buffer_dma: Option<Dma<H>>,
     /// DMA area of cursor image buffer.
-    cursor_buffer_dma: Option<DMA<H>>,
+    cursor_buffer_dma: Option<Dma<H>>,
     /// Queue for sending control commands.
     control_queue: VirtQueue<H>,
     /// Queue for sending cursor commands.
     cursor_queue: VirtQueue<H>,
     /// Queue buffer DMA
-    queue_buf_dma: DMA<H>,
+    queue_buf_dma: Dma<H>,
     /// Send buffer for queue.
     queue_buf_send: &'a mut [u8],
     /// Recv buffer for queue.
@@ -56,7 +58,7 @@ impl<H: Hal, T: Transport> VirtIOGpu<'_, H, T> {
         let control_queue = VirtQueue::new(&mut transport, QUEUE_TRANSMIT, 2)?;
         let cursor_queue = VirtQueue::new(&mut transport, QUEUE_CURSOR, 2)?;
 
-        let queue_buf_dma = DMA::new(2)?;
+        let queue_buf_dma = Dma::new(2)?;
         let queue_buf_send = unsafe { &mut queue_buf_dma.as_buf()[..PAGE_SIZE] };
         let queue_buf_recv = unsafe { &mut queue_buf_dma.as_buf()[PAGE_SIZE..] };
 
@@ -102,7 +104,7 @@ impl<H: Hal, T: Transport> VirtIOGpu<'_, H, T> {
 
         // alloc continuous pages for the frame buffer
         let size = display_info.rect.width * display_info.rect.height * 4;
-        let frame_buffer_dma = DMA::new(pages(size as usize))?;
+        let frame_buffer_dma = Dma::new(pages(size as usize))?;
 
         // resource_attach_backing
         self.resource_attach_backing(RESOURCE_ID_FB, frame_buffer_dma.paddr() as u64, size)?;
@@ -138,7 +140,7 @@ impl<H: Hal, T: Transport> VirtIOGpu<'_, H, T> {
         if cursor_image.len() != size as usize {
             return Err(Error::InvalidParam);
         }
-        let cursor_buffer_dma = DMA::new(pages(size as usize))?;
+        let cursor_buffer_dma = Dma::new(pages(size as usize))?;
         let buf = unsafe { cursor_buffer_dma.as_buf() };
         buf.copy_from_slice(cursor_image);
 
@@ -169,16 +171,11 @@ impl<H: Hal, T: Transport> VirtIOGpu<'_, H, T> {
         unsafe {
             (self.queue_buf_send.as_mut_ptr() as *mut Req).write(req);
         }
-        let token = unsafe {
-            self.control_queue
-                .add(&[self.queue_buf_send], &[self.queue_buf_recv])?
-        };
-        self.transport.notify(QUEUE_TRANSMIT);
-        while !self.control_queue.can_pop() {
-            spin_loop();
-        }
-        let (popped_token, _) = self.control_queue.pop_used()?;
-        assert_eq!(popped_token, token);
+        self.control_queue.add_notify_wait_pop(
+            &[self.queue_buf_send],
+            &[self.queue_buf_recv],
+            &mut self.transport,
+        )?;
         Ok(unsafe { (self.queue_buf_recv.as_ptr() as *const Rsp).read() })
     }
 
@@ -187,13 +184,8 @@ impl<H: Hal, T: Transport> VirtIOGpu<'_, H, T> {
         unsafe {
             (self.queue_buf_send.as_mut_ptr() as *mut Req).write(req);
         }
-        let token = unsafe { self.cursor_queue.add(&[self.queue_buf_send], &[])? };
-        self.transport.notify(QUEUE_CURSOR);
-        while !self.cursor_queue.can_pop() {
-            spin_loop();
-        }
-        let (popped_token, _) = self.cursor_queue.pop_used()?;
-        assert_eq!(popped_token, token);
+        self.cursor_queue
+            .add_notify_wait_pop(&[self.queue_buf_send], &[], &mut self.transport)?;
         Ok(())
     }
 
@@ -308,15 +300,6 @@ struct Config {
     ///
     /// Minimum value is 1, maximum value is 16.
     num_scanouts: Volatile<u32>,
-}
-
-impl fmt::Debug for Config {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Config")
-            .field("events_read", &self.events_read)
-            .field("num_scanouts", &self.num_scanouts)
-            .finish()
-    }
 }
 
 /// Display configuration has changed.
