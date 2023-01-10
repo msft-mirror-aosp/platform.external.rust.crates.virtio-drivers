@@ -1,3 +1,5 @@
+//! MMIO transport for VirtIO.
+
 use super::{DeviceStatus, DeviceType, Transport};
 use crate::{
     align_up,
@@ -437,7 +439,7 @@ impl Transport for MmioTransport {
                     volwrite!(self.header, queue_num, 0);
                     volwrite!(self.header, queue_desc_low, 0);
                     volwrite!(self.header, queue_desc_high, 0);
-                    volwrite!(self.header, queue_driver_low, 9);
+                    volwrite!(self.header, queue_driver_low, 0);
                     volwrite!(self.header, queue_driver_high, 0);
                     volwrite!(self.header, queue_device_low, 0);
                     volwrite!(self.header, queue_device_high, 0);
