@@ -25,7 +25,7 @@ rust_library {
     // has rustc warnings
     crate_name: "virtio_drivers",
     cargo_env_compat: true,
-    cargo_pkg_version: "0.2.0",
+    cargo_pkg_version: "0.3.0",
     srcs: ["src/lib.rs"],
     edition: "2018",
     no_stdlibs: true,
@@ -45,7 +45,7 @@ rust_test {
     // has rustc warnings
     crate_name: "virtio_drivers",
     cargo_env_compat: true,
-    cargo_pkg_version: "0.2.0",
+    cargo_pkg_version: "0.3.0",
     srcs: ["src/lib.rs"],
     test_suites: ["general-tests"],
     auto_gen_config: true,

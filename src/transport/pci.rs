@@ -5,7 +5,8 @@ pub mod bus;
 use self::bus::{DeviceFunction, DeviceFunctionInfo, PciError, PciRoot, PCI_CAP_ID_VNDR};
 use super::{DeviceStatus, DeviceType, Transport};
 use crate::{
-    hal::{Hal, PhysAddr, VirtAddr},
+    hal::{Hal, PhysAddr},
+    nonnull_slice_from_raw_parts,
     volatile::{
         volread, volwrite, ReadOnly, Volatile, VolatileReadable, VolatileWritable, WriteOnly,
     },
@@ -14,7 +15,7 @@ use crate::{
 use core::{
     fmt::{self, Display, Formatter},
     mem::{align_of, size_of},
-    ptr::{self, addr_of_mut, NonNull},
+    ptr::{addr_of_mut, NonNull},
 };
 
 /// The PCI vendor ID for VirtIO devices.
@@ -262,6 +263,10 @@ impl Transport for PciTransport {
         // No-op, the PCI transport doesn't care.
     }
 
+    fn requires_legacy_layout(&self) -> bool {
+        false
+    }
+
     fn queue_set(
         &mut self,
         queue: u16,
@@ -286,7 +291,6 @@ impl Transport for PciTransport {
         // Safe because the common config pointer is valid and we checked in get_bar_region that it
         // was aligned.
         unsafe {
-            volwrite!(self.common_cfg, queue_enable, 0);
             volwrite!(self.common_cfg, queue_select, queue);
             volwrite!(self.common_cfg, queue_size, 0);
             volwrite!(self.common_cfg, queue_desc, 0);
@@ -331,6 +335,13 @@ impl Transport for PciTransport {
         } else {
             Err(Error::ConfigSpaceMissing)
         }
+    }
+}
+
+impl Drop for PciTransport {
+    fn drop(&mut self) {
+        // Reset the device when the transport is dropped.
+        self.set_status(DeviceStatus::empty())
     }
 }
 
@@ -384,14 +395,14 @@ fn get_bar_region<H: Hal, T>(
         return Err(VirtioPciError::BarOffsetOutOfRange);
     }
     let paddr = bar_address as PhysAddr + struct_info.offset as PhysAddr;
-    let vaddr = H::phys_to_virt(paddr);
-    if vaddr % align_of::<T>() != 0 {
+    let vaddr = H::mmio_phys_to_virt(paddr, struct_info.length as usize);
+    if vaddr.as_ptr() as usize % align_of::<T>() != 0 {
         return Err(VirtioPciError::Misaligned {
             vaddr,
             alignment: align_of::<T>(),
         });
     }
-    Ok(NonNull::new(vaddr as _).unwrap())
+    Ok(vaddr.cast())
 }
 
 fn get_bar_region_slice<H: Hal, T>(
@@ -400,9 +411,10 @@ fn get_bar_region_slice<H: Hal, T>(
     struct_info: &VirtioCapabilityInfo,
 ) -> Result<NonNull<[T]>, VirtioPciError> {
     let ptr = get_bar_region::<H, T>(root, device_function, struct_info)?;
-    let raw_slice =
-        ptr::slice_from_raw_parts_mut(ptr.as_ptr(), struct_info.length as usize / size_of::<T>());
-    Ok(NonNull::new(raw_slice).unwrap())
+    Ok(nonnull_slice_from_raw_parts(
+        ptr,
+        struct_info.length as usize / size_of::<T>(),
+    ))
 }
 
 /// An error encountered initialising a VirtIO PCI transport.
@@ -428,7 +440,7 @@ pub enum VirtioPciError {
     /// The virtual address was not aligned as expected.
     Misaligned {
         /// The virtual address in question.
-        vaddr: VirtAddr,
+        vaddr: NonNull<u8>,
         /// The expected alignment in bytes.
         alignment: usize,
     },
@@ -467,7 +479,7 @@ impl Display for VirtioPciError {
             Self::BarOffsetOutOfRange => write!(f, "Capability offset greater than BAR length."),
             Self::Misaligned { vaddr, alignment } => write!(
                 f,
-                "Virtual address {:#018x} was not aligned to a {} byte boundary as expected.",
+                "Virtual address {:#018?} was not aligned to a {} byte boundary as expected.",
                 vaddr, alignment
             ),
             Self::Pci(pci_error) => pci_error.fmt(f),
