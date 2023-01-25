@@ -1,12 +1,14 @@
 //! Driver for VirtIO GPU devices.
 
-use crate::hal::{Dma, Hal};
+use crate::hal::{BufferDirection, Dma, Hal};
 use crate::queue::VirtQueue;
 use crate::transport::Transport;
 use crate::volatile::{volread, ReadOnly, Volatile, WriteOnly};
-use crate::{pages, Error, Result, PAGE_SIZE};
+use crate::{pages, Error, Result};
 use bitflags::bitflags;
 use log::info;
+
+const QUEUE_SIZE: u16 = 2;
 
 /// A virtio based graphics adapter.
 ///
@@ -23,11 +25,13 @@ pub struct VirtIOGpu<'a, H: Hal, T: Transport> {
     /// DMA area of cursor image buffer.
     cursor_buffer_dma: Option<Dma<H>>,
     /// Queue for sending control commands.
-    control_queue: VirtQueue<H>,
+    control_queue: VirtQueue<H, { QUEUE_SIZE as usize }>,
     /// Queue for sending cursor commands.
-    cursor_queue: VirtQueue<H>,
-    /// Queue buffer DMA
-    queue_buf_dma: Dma<H>,
+    cursor_queue: VirtQueue<H, { QUEUE_SIZE as usize }>,
+    /// DMA region for sending data to the device.
+    dma_send: Dma<H>,
+    /// DMA region for receiving data from the device.
+    dma_recv: Dma<H>,
     /// Send buffer for queue.
     queue_buf_send: &'a mut [u8],
     /// Recv buffer for queue.
@@ -55,12 +59,13 @@ impl<H: Hal, T: Transport> VirtIOGpu<'_, H, T> {
             );
         }
 
-        let control_queue = VirtQueue::new(&mut transport, QUEUE_TRANSMIT, 2)?;
-        let cursor_queue = VirtQueue::new(&mut transport, QUEUE_CURSOR, 2)?;
+        let control_queue = VirtQueue::new(&mut transport, QUEUE_TRANSMIT)?;
+        let cursor_queue = VirtQueue::new(&mut transport, QUEUE_CURSOR)?;
 
-        let queue_buf_dma = Dma::new(2)?;
-        let queue_buf_send = unsafe { &mut queue_buf_dma.as_buf()[..PAGE_SIZE] };
-        let queue_buf_recv = unsafe { &mut queue_buf_dma.as_buf()[PAGE_SIZE..] };
+        let dma_send = Dma::new(1, BufferDirection::DriverToDevice)?;
+        let dma_recv = Dma::new(1, BufferDirection::DeviceToDriver)?;
+        let queue_buf_send = unsafe { dma_send.raw_slice().as_mut() };
+        let queue_buf_recv = unsafe { dma_recv.raw_slice().as_mut() };
 
         transport.finish_init();
 
@@ -71,7 +76,8 @@ impl<H: Hal, T: Transport> VirtIOGpu<'_, H, T> {
             rect: None,
             control_queue,
             cursor_queue,
-            queue_buf_dma,
+            dma_send,
+            dma_recv,
             queue_buf_send,
             queue_buf_recv,
         })
@@ -104,7 +110,7 @@ impl<H: Hal, T: Transport> VirtIOGpu<'_, H, T> {
 
         // alloc continuous pages for the frame buffer
         let size = display_info.rect.width * display_info.rect.height * 4;
-        let frame_buffer_dma = Dma::new(pages(size as usize))?;
+        let frame_buffer_dma = Dma::new(pages(size as usize), BufferDirection::DriverToDevice)?;
 
         // resource_attach_backing
         self.resource_attach_backing(RESOURCE_ID_FB, frame_buffer_dma.paddr() as u64, size)?;
@@ -112,7 +118,7 @@ impl<H: Hal, T: Transport> VirtIOGpu<'_, H, T> {
         // map frame buffer to screen
         self.set_scanout(display_info.rect, SCANOUT_ID, RESOURCE_ID_FB)?;
 
-        let buf = unsafe { frame_buffer_dma.as_buf() };
+        let buf = unsafe { frame_buffer_dma.raw_slice().as_mut() };
         self.frame_buffer_dma = Some(frame_buffer_dma);
         Ok(buf)
     }
@@ -140,8 +146,8 @@ impl<H: Hal, T: Transport> VirtIOGpu<'_, H, T> {
         if cursor_image.len() != size as usize {
             return Err(Error::InvalidParam);
         }
-        let cursor_buffer_dma = Dma::new(pages(size as usize))?;
-        let buf = unsafe { cursor_buffer_dma.as_buf() };
+        let cursor_buffer_dma = Dma::new(pages(size as usize), BufferDirection::DriverToDevice)?;
+        let buf = unsafe { cursor_buffer_dma.raw_slice().as_mut() };
         buf.copy_from_slice(cursor_image);
 
         self.resource_create_2d(RESOURCE_ID_CURSOR, CURSOR_RECT.width, CURSOR_RECT.height)?;
