@@ -11,13 +11,13 @@ third_party {
   }
   url {
     type: ARCHIVE
-    value: "https://static.crates.io/crates/virtio-drivers/virtio-drivers-0.2.0.crate"
+    value: "https://static.crates.io/crates/virtio-drivers/virtio-drivers-0.3.0.crate"
   }
-  version: "0.2.0"
+  version: "0.3.0"
   license_type: NOTICE
   last_upgrade_date {
     year: 2023
     month: 1
-    day: 6
+    day: 24
   }
 }
