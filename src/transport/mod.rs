@@ -1,3 +1,5 @@
+//! VirtIO transports.
+
 #[cfg(test)]
 pub mod fake;
 pub mod mmio;
@@ -29,6 +31,11 @@ pub trait Transport {
 
     /// Sets the guest page size.
     fn set_guest_page_size(&mut self, guest_page_size: u32);
+
+    /// Returns whether the transport requires queues to use the legacy layout.
+    ///
+    /// Ref: 2.6.2 Legacy Interfaces: A Note on Virtqueue Layout
+    fn requires_legacy_layout(&self) -> bool;
 
     /// Sets up the given queue.
     fn queue_set(

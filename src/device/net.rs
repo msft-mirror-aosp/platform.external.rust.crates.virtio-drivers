@@ -1,10 +1,16 @@
-use core::mem::{size_of, MaybeUninit};
+//! Driver for VirtIO network devices.
 
-use super::*;
+use crate::hal::Hal;
+use crate::queue::VirtQueue;
 use crate::transport::Transport;
 use crate::volatile::{volread, ReadOnly};
-use bitflags::*;
-use log::*;
+use crate::Result;
+use bitflags::bitflags;
+use core::mem::{size_of, MaybeUninit};
+use log::{debug, info};
+use zerocopy::{AsBytes, FromBytes};
+
+const QUEUE_SIZE: u16 = 2;
 
 /// The virtio network device is a virtual ethernet card.
 ///
@@ -16,8 +22,8 @@ use log::*;
 pub struct VirtIONet<H: Hal, T: Transport> {
     transport: T,
     mac: EthernetAddress,
-    recv_queue: VirtQueue<H>,
-    send_queue: VirtQueue<H>,
+    recv_queue: VirtQueue<H, { QUEUE_SIZE as usize }>,
+    send_queue: VirtQueue<H, { QUEUE_SIZE as usize }>,
 }
 
 impl<H: Hal, T: Transport> VirtIONet<H, T> {
@@ -38,9 +44,8 @@ impl<H: Hal, T: Transport> VirtIONet<H, T> {
             debug!("Got MAC={:?}, status={:?}", mac, volread!(config, status));
         }
 
-        let queue_num = 2; // for simplicity
-        let recv_queue = VirtQueue::new(&mut transport, QUEUE_RECEIVE, queue_num)?;
-        let send_queue = VirtQueue::new(&mut transport, QUEUE_TRANSMIT, queue_num)?;
+        let recv_queue = VirtQueue::new(&mut transport, QUEUE_RECEIVE)?;
+        let send_queue = VirtQueue::new(&mut transport, QUEUE_TRANSMIT)?;
 
         transport.finish_init();
 
@@ -75,7 +80,7 @@ impl<H: Hal, T: Transport> VirtIONet<H, T> {
     /// Receive a packet.
     pub fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
         let mut header = MaybeUninit::<Header>::uninit();
-        let header_buf = unsafe { (*header.as_mut_ptr()).as_buf_mut() };
+        let header_buf = unsafe { (*header.as_mut_ptr()).as_bytes_mut() };
         let len =
             self.recv_queue
                 .add_notify_wait_pop(&[], &[header_buf, buf], &mut self.transport)?;
@@ -87,7 +92,7 @@ impl<H: Hal, T: Transport> VirtIONet<H, T> {
     pub fn send(&mut self, buf: &[u8]) -> Result {
         let header = unsafe { MaybeUninit::<Header>::zeroed().assume_init() };
         self.send_queue
-            .add_notify_wait_pop(&[header.as_buf(), buf], &[], &mut self.transport)?;
+            .add_notify_wait_pop(&[header.as_bytes(), buf], &[], &mut self.transport)?;
         Ok(())
     }
 }
@@ -186,7 +191,7 @@ type EthernetAddress = [u8; 6];
 
 // virtio 5.1.6 Device Operation
 #[repr(C)]
-#[derive(Debug)]
+#[derive(AsBytes, Debug, FromBytes)]
 struct Header {
     flags: Flags,
     gso_type: GsoType,
@@ -197,9 +202,9 @@ struct Header {
     // payload starts from here
 }
 
-unsafe impl AsBuf for Header {}
-
 bitflags! {
+    #[repr(transparent)]
+    #[derive(AsBytes, FromBytes)]
     struct Flags: u8 {
         const NEEDS_CSUM = 1;
         const DATA_VALID = 2;
@@ -207,14 +212,16 @@ bitflags! {
     }
 }
 
-#[repr(u8)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-enum GsoType {
-    NONE = 0,
-    TCPV4 = 1,
-    UDP = 3,
-    TCPV6 = 4,
-    ECN = 0x80,
+#[repr(transparent)]
+#[derive(AsBytes, Debug, Copy, Clone, Eq, FromBytes, PartialEq)]
+struct GsoType(u8);
+
+impl GsoType {
+    const NONE: GsoType = GsoType(0);
+    const TCPV4: GsoType = GsoType(1);
+    const UDP: GsoType = GsoType(3);
+    const TCPV6: GsoType = GsoType(4);
+    const ECN: GsoType = GsoType(0x80);
 }
 
 const QUEUE_RECEIVE: u16 = 0;

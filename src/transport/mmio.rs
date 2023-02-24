@@ -1,3 +1,5 @@
+//! MMIO transport for VirtIO.
+
 use super::{DeviceStatus, DeviceType, Transport};
 use crate::{
     align_up,
@@ -369,6 +371,13 @@ impl Transport for MmioTransport {
         }
     }
 
+    fn requires_legacy_layout(&self) -> bool {
+        match self.version {
+            MmioVersion::Legacy => true,
+            MmioVersion::Modern => false,
+        }
+    }
+
     fn queue_set(
         &mut self,
         queue: u16,
@@ -437,7 +446,7 @@ impl Transport for MmioTransport {
                     volwrite!(self.header, queue_num, 0);
                     volwrite!(self.header, queue_desc_low, 0);
                     volwrite!(self.header, queue_desc_high, 0);
-                    volwrite!(self.header, queue_driver_low, 9);
+                    volwrite!(self.header, queue_driver_low, 0);
                     volwrite!(self.header, queue_driver_high, 0);
                     volwrite!(self.header, queue_device_low, 0);
                     volwrite!(self.header, queue_device_high, 0);
@@ -479,5 +488,12 @@ impl Transport for MmioTransport {
             );
         }
         Ok(NonNull::new((self.header.as_ptr() as usize + CONFIG_SPACE_OFFSET) as _).unwrap())
+    }
+}
+
+impl Drop for MmioTransport {
+    fn drop(&mut self) {
+        // Reset the device when the transport is dropped.
+        self.set_status(DeviceStatus::empty())
     }
 }

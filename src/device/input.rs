@@ -1,10 +1,15 @@
-use super::*;
+//! Driver for VirtIO input devices.
+
+use crate::hal::Hal;
+use crate::queue::VirtQueue;
 use crate::transport::Transport;
 use crate::volatile::{volread, volwrite, ReadOnly, WriteOnly};
+use crate::Result;
 use alloc::boxed::Box;
-use bitflags::*;
+use bitflags::bitflags;
 use core::ptr::NonNull;
-use log::*;
+use log::info;
+use zerocopy::{AsBytes, FromBytes};
 
 /// Virtual human interface devices such as keyboards, mice and tablets.
 ///
@@ -13,8 +18,8 @@ use log::*;
 /// making pass-through implementations on top of evdev easy.
 pub struct VirtIOInput<H: Hal, T: Transport> {
     transport: T,
-    event_queue: VirtQueue<H>,
-    status_queue: VirtQueue<H>,
+    event_queue: VirtQueue<H, QUEUE_SIZE>,
+    status_queue: VirtQueue<H, QUEUE_SIZE>,
     event_buf: Box<[InputEvent; 32]>,
     config: NonNull<Config>,
 }
@@ -33,12 +38,15 @@ impl<H: Hal, T: Transport> VirtIOInput<H, T> {
 
         let config = transport.config_space::<Config>()?;
 
-        let mut event_queue = VirtQueue::new(&mut transport, QUEUE_EVENT, QUEUE_SIZE as u16)?;
-        let status_queue = VirtQueue::new(&mut transport, QUEUE_STATUS, QUEUE_SIZE as u16)?;
+        let mut event_queue = VirtQueue::new(&mut transport, QUEUE_EVENT)?;
+        let status_queue = VirtQueue::new(&mut transport, QUEUE_STATUS)?;
         for (i, event) in event_buf.as_mut().iter_mut().enumerate() {
             // Safe because the buffer lasts as long as the queue.
-            let token = unsafe { event_queue.add(&[], &[event.as_buf_mut()])? };
+            let token = unsafe { event_queue.add(&[], &[event.as_bytes_mut()])? };
             assert_eq!(token, i as u16);
+        }
+        if event_queue.should_notify() {
+            transport.notify(QUEUE_EVENT);
         }
 
         transport.finish_init();
@@ -59,15 +67,21 @@ impl<H: Hal, T: Transport> VirtIOInput<H, T> {
 
     /// Pop the pending event.
     pub fn pop_pending_event(&mut self) -> Option<InputEvent> {
-        if let Ok((token, _)) = self.event_queue.pop_used() {
+        if let Some(token) = self.event_queue.peek_used() {
             let event = &mut self.event_buf[token as usize];
+            self.event_queue
+                .pop_used(token, &[], &[event.as_bytes_mut()])
+                .ok()?;
             // requeue
             // Safe because buffer lasts as long as the queue.
-            if let Ok(new_token) = unsafe { self.event_queue.add(&[], &[event.as_buf_mut()]) } {
+            if let Ok(new_token) = unsafe { self.event_queue.add(&[], &[event.as_bytes_mut()]) } {
                 // This only works because nothing happen between `pop_used` and `add` that affects
                 // the list of free descriptors in the queue, so `add` reuses the descriptor which
                 // was just freed by `pop_used`.
                 assert_eq!(new_token, token);
+                if self.event_queue.should_notify() {
+                    self.transport.notify(QUEUE_EVENT);
+                }
                 return Some(*event);
             }
         }
@@ -161,7 +175,7 @@ struct DevIDs {
 /// Both queues use the same `virtio_input_event` struct. `type`, `code` and `value`
 /// are filled according to the Linux input layer (evdev) interface.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(AsBytes, Clone, Copy, Debug, Default, FromBytes)]
 pub struct InputEvent {
     /// Event type.
     pub event_type: u16,
@@ -170,8 +184,6 @@ pub struct InputEvent {
     /// Event value.
     pub value: u32,
 }
-
-unsafe impl AsBuf for InputEvent {}
 
 bitflags! {
     struct Feature: u64 {
