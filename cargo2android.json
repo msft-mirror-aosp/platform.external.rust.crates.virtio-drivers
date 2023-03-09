@@ -5,5 +5,7 @@
   "no-host": "true",
   "patch": "patches/Android.bp.patch",
   "run": true,
-  "tests": true
+  "tests": true,
+  "vendor-available": false,
+  "product-available": false
 }
