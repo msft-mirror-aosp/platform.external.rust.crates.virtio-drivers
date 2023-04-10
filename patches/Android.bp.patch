@@ -10,7 +10,8 @@ index b08769d..230c659 100644
      rustlibs: [
          "libbitflags",
 -        "liblog_rust",
+-        "libzerocopy",
 +        "liblog_rust_nostd",
-         "libzerocopy",
++        "libzerocopy_nostd",
      ],
      apex_available: [
