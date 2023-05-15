@@ -20,14 +20,13 @@ license {
     ],
 }
 
-rust_library {
+rust_library_rlib {
     name: "libvirtio_drivers",
     crate_name: "virtio_drivers",
     cargo_env_compat: true,
     cargo_pkg_version: "0.4.0",
     srcs: ["src/lib.rs"],
     edition: "2018",
-    no_stdlibs: true,
     rustlibs: [
         "libbitflags",
         "liblog_rust_nostd",
@@ -36,6 +35,12 @@ rust_library {
     apex_available: [
         "//apex_available:platform",
         "//apex_available:anyapex",
+    ],
+    prefer_rlib: true,
+    no_stdlibs: true,
+    stdlibs: [
+        "libcompiler_builtins.rust_sysroot",
+        "libcore.rust_sysroot",
     ],
 }
 
