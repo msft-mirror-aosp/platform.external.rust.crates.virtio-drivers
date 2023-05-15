@@ -1,12 +1,9 @@
 diff --git a/Android.bp b/Android.bp
-index b08769d..230c659 100644
+index 07e10b6..5949f7f 100644
 --- a/Android.bp
 +++ b/Android.bp
-@@ -29,9 +29,10 @@ rust_library {
-     cargo_pkg_version: "0.2.0",
-     srcs: ["src/lib.rs"],
+@@ -29,8 +29,8 @@ rust_library {
      edition: "2018",
-+    no_stdlibs: true,
      rustlibs: [
          "libbitflags",
 -        "liblog_rust",
@@ -15,3 +12,4 @@ index b08769d..230c659 100644
 +        "libzerocopy_nostd",
      ],
      apex_available: [
+         "//apex_available:platform",
