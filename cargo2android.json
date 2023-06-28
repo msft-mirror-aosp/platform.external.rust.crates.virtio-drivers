@@ -1,7 +1,7 @@
 {
   "dependencies": true,
   "device": true,
-  "features": "",
+  "features": "alloc",
   "force-rlib": true,
   "no-host": "true",
   "no-std": true,
