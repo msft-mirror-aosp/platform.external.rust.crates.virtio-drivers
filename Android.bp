@@ -22,9 +22,10 @@ license {
 
 rust_library_rlib {
     name: "libvirtio_drivers",
+    // has rustc warnings
     crate_name: "virtio_drivers",
     cargo_env_compat: true,
-    cargo_pkg_version: "0.5.0",
+    cargo_pkg_version: "0.6.0",
     srcs: ["src/lib.rs"],
     edition: "2018",
     features: ["alloc"],
@@ -47,9 +48,10 @@ rust_library_rlib {
 
 rust_test {
     name: "virtio-drivers_test_src_lib",
+    // has rustc warnings
     crate_name: "virtio_drivers",
     cargo_env_compat: true,
-    cargo_pkg_version: "0.5.0",
+    cargo_pkg_version: "0.6.0",
     srcs: ["src/lib.rs"],
     test_suites: ["general-tests"],
     auto_gen_config: true,
