@@ -1,6 +1,6 @@
 [package]
 name = "virtio-drivers"
-version = "0.7.1"
+version = "0.7.0"
 license = "MIT"
 authors = [
   "Jiajie Chen <noc@jiegec.ac.cn>",
@@ -17,11 +17,11 @@ categories = ["hardware-support", "no-std"]
 [dependencies]
 log = "0.4"
 bitflags = "2.3.0"
-zerocopy = { version = "0.7.5", features = ["derive"] }
+zerocopy = "0.6.1"
 
 [features]
 default = ["alloc"]
 alloc = ["zerocopy/alloc"]
 
 [dev-dependencies]
-zerocopy = { version = "0.7.5", features = ["alloc"] }
+zerocopy = { version = "0.6.1", features = ["alloc"] }

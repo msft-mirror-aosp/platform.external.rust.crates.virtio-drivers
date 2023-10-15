@@ -8,7 +8,7 @@ use core::cmp::min;
 use core::convert::TryInto;
 use core::hint::spin_loop;
 use log::debug;
-use zerocopy::FromZeroes;
+use zerocopy::FromBytes;
 
 const PER_CONNECTION_BUFFER_CAPACITY: usize = 1024;
 
@@ -226,13 +226,10 @@ impl<H: Hal, T: Transport> VsockConnectionManager<H, T> {
         Ok(bytes_read)
     }
 
-    /// Returns the number of bytes in the receive buffer available to be read by `recv`.
-    ///
-    /// When the available bytes is 0, it indicates that the receive buffer is empty and does not
-    /// contain any data.
+    /// Returns the number of bytes currently available in the recv buffer.
     pub fn recv_buffer_available_bytes(&mut self, peer: VsockAddr, src_port: u32) -> Result<usize> {
         let (_, connection) = get_connection(&mut self.connections, peer, src_port)?;
-        Ok(connection.buffer.used())
+        Ok(connection.buffer.available())
     }
 
     /// Sends a credit update to the given peer.
@@ -316,7 +313,7 @@ struct RingBuffer {
 impl RingBuffer {
     pub fn new(capacity: usize) -> Self {
         Self {
-            buffer: FromZeroes::new_box_slice_zeroed(capacity),
+            buffer: FromBytes::new_box_slice_zeroed(capacity),
             used: 0,
             start: 0,
         }
@@ -333,7 +330,7 @@ impl RingBuffer {
     }
 
     /// Returns the number of bytes currently free in the buffer.
-    pub fn free(&self) -> usize {
+    pub fn available(&self) -> usize {
         self.buffer.len() - self.used
     }
 
@@ -341,7 +338,7 @@ impl RingBuffer {
     ///
     /// Returns true if they were added, or false if they were not.
     pub fn add(&mut self, bytes: &[u8]) -> bool {
-        if bytes.len() > self.free() {
+        if bytes.len() > self.available() {
             return false;
         }
 
