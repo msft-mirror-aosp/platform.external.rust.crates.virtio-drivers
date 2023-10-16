@@ -12,7 +12,7 @@
 [package]
 edition = "2018"
 name = "virtio-drivers"
-version = "0.6.0"
+version = "0.7.1"
 authors = [
     "Jiajie Chen <noc@jiegec.ac.cn>",
     "Runji Wang <wangrunji0408@163.com>",
@@ -36,10 +36,11 @@ version = "2.3.0"
 version = "0.4"
 
 [dependencies.zerocopy]
-version = "0.6.1"
+version = "0.7.5"
+features = ["derive"]
 
 [dev-dependencies.zerocopy]
-version = "0.6.1"
+version = "0.7.5"
 features = ["alloc"]
 
 [features]
